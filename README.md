@@ -6,6 +6,9 @@ Most of it is blocking.
 
 The actual reference manual can be found [here](https://fcc.report/FCC-ID/2AAXVTNTMOD1/2787937.pdf).
 
+This library is in active and rapid development. At some point we'll publish to crates.io; for now,
+just git clone and use a cargo path dependency.
+
 ## Stability
 Currently, dw1000-rs requires the nightly toolchain. Work is underway to bring it fully into stable rust.
 
