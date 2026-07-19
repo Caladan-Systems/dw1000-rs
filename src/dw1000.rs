@@ -2,13 +2,13 @@
  * A Decawave DW1000 driver implementation.
  */
 use embedded_hal::{
-    digital::OutputPin,
+    digital::{InputPin, OutputPin},
     spi::{Operation, SpiDevice},
 };
-use embedded_hal_async::delay::DelayNs;
+use embedded_hal_async::{delay::DelayNs, digital::Wait};
 use thiserror::Error;
 
-use crate::registers::{Register, RegisterType, dw1000::*};
+use crate::registers::{Register, RegisterType, ReservedField, dw1000::*};
 
 /// This is the size of the preamble detection sliding-window register.
 /// In general, the largest value will get the best results, but the preamble size
@@ -96,6 +96,68 @@ impl SysStatus {
     }
 }
 
+impl<const N: usize> core::ops::BitOr for ReservedField<N> {
+    type Output = ReservedField<N>;
+
+    fn bitor(self, _rhs: Self) -> Self::Output {
+        ReservedField
+    }
+}
+
+macro_rules! bitor_bool_impl_self {
+    ($self:ident, $rhs:ident, $($field_name:ident)*) => {
+        Self {
+            $(
+                $field_name: $self.$field_name | $rhs.$field_name,
+            )*
+        }
+    };
+}
+
+impl core::ops::BitOr for SysStatus {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        bitor_bool_impl_self!(self, rhs,
+            irqs
+            cplock
+            esyncr
+            aat
+            txfrb
+            txprs
+            txphs
+            txfrs
+            rxprd
+            rxsfdd
+            ldedone
+            _res1
+            rxovrr
+            rxpto
+            gpioirq
+            slp2init
+            rfpll_ll
+            clkpll_ll
+            rxsfd_to
+            hpdwarn
+            txberr
+            affrej
+            hsrbp
+            icrbp
+            rxrscs
+            rxprej
+            txpute
+            rxphd
+            rxphe
+            rxdfr
+            rxfcg
+            rxfce
+            rxrfsl
+            rxrfto
+            ldeerr
+        )
+    }
+}
+
 #[derive(Debug, Error)]
 /// DW1000 errors.
 pub enum Error<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digital::Error> {
@@ -146,14 +208,17 @@ pub enum Error<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digi
 ///
 /// Note that this does not use asynchronous spi: all spi operations are blocking.
 /// This is because DW1000 requires fairly fast spi turnarounds and async is slow.
-pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> {
+pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs> {
     spi: Device,
     nrst: NrstPin,
+    irq: Option<IrqPin>,
     profile: Profile,
     delays: Delays,
 }
 
-impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, NrstPin, Delays> {
+impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
+    Dw1000<Device, NrstPin, IrqPin, Delays>
+{
     /// The error type returned by most of the functions of the driver.
     /// It's fairly complicated because it's generic over the embedded_hal errors.
     pub type Error = Error<Device::Error, NrstPin::Error>;
@@ -167,12 +232,14 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
     pub async fn new(
         spi: Device,
         mut nrst: NrstPin,
+        irq: Option<IrqPin>,
         profile: Profile,
         delays: Delays,
     ) -> Result<Self, Self::Error> {
         nrst.set_high().map_err(Error::GpioError)?;
         Ok(Self {
             spi,
+            irq,
             nrst,
             profile,
             delays,
@@ -192,6 +259,28 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
         } else {
             Ok(())
         }
+    }
+
+    async fn interrupt_wait(
+        &mut self,
+        mut f: impl FnMut(SysStatus) -> bool,
+    ) -> Result<(), Self::Error> {
+        if self.irq.is_some() {
+            loop {
+                self.irq.as_mut().unwrap().wait_for_high().await.unwrap();
+                if f(self.get_status()?) {
+                    break;
+                }
+            }
+        } else {
+            loop {
+                self.delays.delay_us(10).await;
+                if f(self.get_status()?) {
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Reset the device. This pulls NRST low for 10ms and then waits
@@ -236,7 +325,8 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
             Operation::Write(Self::make_header(false, Reg::FILE, Reg::REG, &mut [0; 3])),
             Operation::Read(&mut buffer),
         ])?;
-        Ok(Reg::Type::deserialize(&buffer))
+        let ret = Ok(Reg::Type::deserialize(&buffer));
+        ret
     }
 
     /// Write a value to a register in the dw1000 register bank.
@@ -293,10 +383,14 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
             SysCfg {
                 dis_drxb: true,
                 dis_stxp: true,
+                hirq_pol: true,
                 rxm110k: matches!(self.profile.drate, Bitrate::Kbps110),
                 ..Default::default()
             },
         )?;
+        if self.irq.is_some() {
+            self.write_reg(SYS_MASK, SysStatus::rx_mask() | SysStatus::tx_mask())?;
+        }
         self.write_reg(
             CHAN_CTRL,
             ChanCtrl {
@@ -485,10 +579,8 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
                 ..Default::default()
             },
         )?;
-        // TODO: use an interrupt for this
-        while !self.get_status()?.txfrs {
-            self.delays.delay_us(10).await
-        }
+        self.interrupt_wait(|sys_status| sys_status.txfrs).await?;
+        self.write_reg(SYS_STATUS, SysStatus::tx_mask())?;
         Ok(())
     }
 
@@ -512,10 +604,8 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
                 ..Default::default()
             },
         )?;
+        self.interrupt_wait(|sys_status| sys_status.txfrs).await?;
         self.write_reg(SYS_STATUS, SysStatus::tx_mask())?;
-        while !self.get_status()?.txfrs {
-            self.delays.delay_us(10).await
-        }
         Ok(())
     }
 
@@ -554,19 +644,12 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
             },
         )?;
         let ret = loop {
-            // TODO: use an interrupt for this
-            self.delays.delay_us(10).await;
-            let stat = self.read_reg(SYS_STATUS)?;
-            if stat.rxdfr {
-                let finfo = self.read_reg(RX_FINFO)?;
-                if finfo.rxflen.0 < 2 {
-                    return Err(Error::RxLenTooSmall(finfo.rxflen.0 as usize));
-                }
-                let len = (finfo.rxflen.0 as usize - 2).min(buffer.len());
-                self.read_rx_buffer(&mut buffer[0..len])?;
-                self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
-                break Ok(len);
-            }
+            self.interrupt_wait(|_| true).await?;
+            //defmt::info!("isr");
+            let stat = self.read_reg(SYS_STATUS);
+            //defmt::info!("stat: {}", defmt::Debug2Format(&stat));
+            let stat = stat?;
+            self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
             if stat.rxphe {
                 break Err(Error::PhyHeaderError);
             }
@@ -590,6 +673,16 @@ impl<Device: SpiDevice, NrstPin: OutputPin, Delays: DelayNs> Dw1000<Device, Nrst
             }
             if stat.affrej {
                 break Err(Error::FrameFilterReject);
+            }
+            if stat.rxdfr {
+                let finfo = self.read_reg(RX_FINFO)?;
+                if finfo.rxflen.0 < 2 {
+                    return Err(Error::RxLenTooSmall(finfo.rxflen.0 as usize));
+                }
+                let len = (finfo.rxflen.0 as usize - 2).min(buffer.len());
+                self.read_rx_buffer(&mut buffer[0..len])?;
+                self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
+                break Ok(len);
             }
         };
         // go to idle

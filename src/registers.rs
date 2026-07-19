@@ -799,10 +799,12 @@ pub mod dw1000 {
     register!(DX_TIME: Timestamp = 0x0A 0x00);
     register!(RX_FWTO: u16 = 0x0C 0x00);
     register!(SYS_CTRL: SysCtrl = 0x0D 0x00);
+    register!(SYS_MASK: SysStatus = 0x0E 0x00);
     register!(SYS_STATUS: SysStatus = 0x0F 0x00);
     register!(RX_FINFO: RxFinfo = 0x10 0x00);
     register!(RX_TIME: Timestamp = 0x15 0x00);
     register!(TX_TIME: Timestamp = 0x17 0x00);
+    register!(TX_POWER: u32 = 0x1E 0x00);
     register!(CHAN_CTRL: ChanCtrl = 0x1F 0x00);
     register!(DRX_TUNE0B: u16 = 0x27 0x02);
     register!(DRX_TUNE1A: u16 = 0x27 0x04);
@@ -832,8 +834,6 @@ pub mod dw1000 {
     register!(LDE_REPC: u16 = 0x2E 0x2804);
     register!(EVC_CTRL: EvcCtrl = 0x2F 0x00);
     register!(EVC_FCG: u16 = 0x2F 0x08);
-
-    register!(TX_POWER: u32 = 0x1E 0x00);
 
     register!(PMSC_CTRL0: u16 = 0x36 0x00);
 }
