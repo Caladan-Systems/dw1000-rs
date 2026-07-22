@@ -855,23 +855,245 @@ pub mod dw1000 {
         sleep_tim: NumberField<u16, 16> = (0.into())
     });
 
+    reg_type!(struct RxFqual(8) {
+        std_noise: NumberField<u16, 16> = (0.into()),
+        ff_ampl2: NumberField<u16, 16> = (0.into()),
+        ff_ampl3: NumberField<u16, 16> = (0.into()),
+        cir_pwr: NumberField<u16, 16> = (0.into())
+    });
+
+    reg_type!(struct RxTtcko(5) {
+        rxtofs: NumberField<u32, 19> = (0.into()),
+        _res1: ReservedField<5> = ReservedField,
+        rsmpdel: NumberField<u8, 8> = (0.into()),
+        rcphase: NumberField<u8, 7> = (0.into())
+    });
+
+    reg_type!(struct AckRespT(4) {
+        w4r_tim: NumberField<u32, 20> = (0.into()),
+        _res1: ReservedField<4> = ReservedField,
+        ack_tim: NumberField<u8, 8> = (0.into())
+    });
+
+    reg_type!(struct RxSniff(4) {
+        sniff_ont: NumberField<u8, 4> = (0.into()),
+        _res1: ReservedField<4> = ReservedField,
+        sniff_offt: NumberField<u8, 8> = (0.into())
+    });
+
+    reg_type!(struct AgcCtrl1(2) {
+        dis_am: bool = false
+    });
+
+    reg_type!(struct AgcStat1(3) {
+        _res1: ReservedField<6> = ReservedField,
+        edg1: NumberField<u8, 5> = (0.into()),
+        edv2: NumberField<u16, 9> = (0.into())
+    });
+
+    reg_type!(struct EcCtrl(4) {
+        ostsm: bool = false,
+        osrsm: bool = false,
+        _res1: ReservedField<1> = ReservedField,
+        wait: NumberField<u8, 7> = (0.into()),
+        ostrm: bool = false
+    });
+
+    reg_type!(struct EcGolp(4) {
+        offset_ext: NumberField<u8, 6> = (0.into())
+    });
+
+    reg_enum!(enum Msgp(u8, 2) {
+        Gpio => 0b00,
+        Led => 0b01
+    });
+
+    reg_type!(struct GpioMode(4) {
+        _res1: ReservedField<6> = ReservedField,
+        msgp0: Msgp = (Msgp::Gpio),
+        msgp1: Msgp = (Msgp::Gpio),
+        msgp2: Msgp = (Msgp::Gpio),
+        msgp3: Msgp = (Msgp::Gpio),
+        msgp4: Msgp = (Msgp::Gpio),
+        msgp5: Msgp = (Msgp::Gpio),
+        msgp6: Msgp = (Msgp::Gpio),
+        msgp7: Msgp = (Msgp::Gpio),
+        msgp8: Msgp = (Msgp::Gpio)
+    });
+
+    reg_type!(struct GpioDir(4) {
+        gdp0: bool = false,
+        gdp1: bool = false,
+        gdp2: bool = false,
+        gdp3: bool = false,
+        gdm0: bool = false,
+        gdm1: bool = false,
+        gdm2: bool = false,
+        gdm3: bool = false,
+        gdp4: bool = false,
+        gdp5: bool = false,
+        gdp6: bool = false,
+        gdp7: bool = false,
+        gdm4: bool = false,
+        gdm5: bool = false,
+        gdm6: bool = false,
+        gdm7: bool = false,
+        gdp8: bool = false,
+        _res1: ReservedField<3> = ReservedField,
+        gdm8: bool = false
+    });
+
+    reg_type!(struct GpioDout(4) {
+        gop0: bool = false,
+        gop1: bool = false,
+        gop2: bool = false,
+        gop3: bool = false,
+        gom0: bool = false,
+        gom1: bool = false,
+        gom2: bool = false,
+        gom3: bool = false,
+        gop4: bool = false,
+        gop5: bool = false,
+        gop6: bool = false,
+        gop7: bool = false,
+        gom4: bool = false,
+        gom5: bool = false,
+        gom6: bool = false,
+        gom7: bool = false,
+        gop8: bool = false,
+        _res1: ReservedField<3> = ReservedField,
+        gom8: bool = false
+    });
+
+    reg_type!(struct GpioIrqe(4) {
+        girqe0: bool = false,
+        girqe1: bool = false,
+        girqe2: bool = false,
+        girqe3: bool = false,
+        girqe4: bool = false,
+        girqe5: bool = false,
+        girqe6: bool = false,
+        girqe7: bool = false,
+        girqe8: bool = false
+    });
+
+    reg_type!(struct GpioIsen(4) {
+        gisen0: bool = false,
+        gisen1: bool = false,
+        gisen2: bool = false,
+        gisen3: bool = false,
+        gisen4: bool = false,
+        gisen5: bool = false,
+        gisen6: bool = false,
+        gisen7: bool = false,
+        gisen8: bool = false
+    });
+
+    reg_type!(struct GpioImode(4) {
+        gimode0: bool = false,
+        gimode1: bool = false,
+        gimode2: bool = false,
+        gimode3: bool = false,
+        gimode4: bool = false,
+        gimode5: bool = false,
+        gimode6: bool = false,
+        gimode7: bool = false,
+        gimode8: bool = false
+    });
+
+    reg_type!(struct GpioIbes(4) {
+        gibes0: bool = false,
+        gibes1: bool = false,
+        gibes2: bool = false,
+        gibes3: bool = false,
+        gibes4: bool = false,
+        gibes5: bool = false,
+        gibes6: bool = false,
+        gibes7: bool = false,
+        gibes8: bool = false
+    });
+
+    reg_type!(struct GpioIclr(4) {
+        giclr0: bool = false,
+        giclr1: bool = false,
+        giclr2: bool = false,
+        giclr3: bool = false,
+        giclr4: bool = false,
+        giclr5: bool = false,
+        giclr6: bool = false,
+        giclr7: bool = false,
+        giclr8: bool = false
+    });
+
+    reg_type!(struct GpioIdbe(4) {
+        gidbe0: bool = false,
+        gidbe1: bool = false,
+        gidbe2: bool = false,
+        gidbe3: bool = false,
+        gidbe4: bool = false,
+        gidbe5: bool = false,
+        gidbe6: bool = false,
+        gidbe7: bool = false,
+        gidbe8: bool = false
+    });
+
+    reg_type!(struct GpioRaw(4) {
+        grawp0: bool = false,
+        grawp1: bool = false,
+        grawp2: bool = false,
+        grawp3: bool = false,
+        grawp4: bool = false,
+        grawp5: bool = false,
+        grawp6: bool = false,
+        grawp7: bool = false,
+        grawp8: bool = false
+    });
+
     register!(DEV_ID: u32 = 0x00 0x00);
     register!(EUI: u64 = 0x01 0x00);
     register!(PANADR: PanAdr = 0x03 0x00);
     register!(SYS_CFG: SysCfg = 0x04 0x00);
     register!(SYS_TIME: Timestamp = 0x06 0x00);
     register!(TX_FCTRL: TxFctrl = 0x08 0x00);
+    // TX_BUFFER (0x09 0x00) omitted because it's a special case
     register!(DX_TIME: Timestamp = 0x0A 0x00);
     register!(RX_FWTO: u16 = 0x0C 0x00);
     register!(SYS_CTRL: SysCtrl = 0x0D 0x00);
     register!(SYS_MASK: SysStatus = 0x0E 0x00);
     register!(SYS_STATUS: SysStatus = 0x0F 0x00);
     register!(RX_FINFO: RxFinfo = 0x10 0x00);
+    // RX_BUFFER (0x11 0x00) omitted because it's a special case
+    register!(RX_FQUAL: RxFqual = 0x12 0x00);
+    register!(RX_TTCKI: u32 = 0x13 0x00);
+    register!(RX_TTCKO: RxTtcko = 0x14 0x00);
     register!(RX_TIME: Timestamp = 0x15 0x00);
     register!(TX_TIME: Timestamp = 0x17 0x00);
+    register!(TX_ANTD: u16 = 0x18 0x00);
     register!(SYS_STATE: SysState = 0x19 0x00);
+    register!(ACK_RESP_T: AckRespT = 0x1A 0x00);
+    register!(RX_SNIFF: RxSniff = 0x1D 0x00);
     register!(TX_POWER: u32 = 0x1E 0x00);
     register!(CHAN_CTRL: ChanCtrl = 0x1F 0x00);
+    // USR_SFD (0x21 0x00) omitted because it's a special case
+    register!(AGC_CTRL1: AgcCtrl1 = 0x23 0x02);
+    register!(AGC_TUNE1: u16 = 0x23 0x04);
+    register!(AGC_TUNE2: u32 = 0x23 0x0C);
+    register!(AGC_TUNE3: u16 = 0x23 0x12);
+    register!(AGC_STAT1: AgcStat1 = 0x23 0x1E);
+    register!(EC_CTRL: EcCtrl = 0x24 0x00);
+    register!(EC_RXTC: u32 = 0x24 0x04);
+    register!(EC_GOLP: EcGolp = 0x24 0x08);
+    // ACC_MEM (0x25 0x00) omitted because it's a special case
+    register!(GPIO_MODE: GpioMode = 0x26 0x00);
+    register!(GPIO_DIR: GpioDir = 0x26 0x08);
+    register!(GPIO_DOUT: GpioDout = 0x26 0x0C);
+    register!(GPIO_IRQE: GpioIrqe = 0x26 0x10);
+    register!(GPIO_ISEN: GpioIsen = 0x26 0x14);
+    register!(GPIO_IMODE: GpioImode = 0x26 0x18);
+    register!(GPIO_IBES: GpioIbes = 0x26 0x1C);
+    register!(GPIO_ICLR: GpioIclr = 0x26 0x20);
+    register!(GPIO_IDBE: GpioIdbe = 0x26 0x24);
+    register!(GPIO_RAW: GpioRaw = 0x26 0x28);
     register!(DRX_TUNE0B: u16 = 0x27 0x02);
     register!(DRX_TUNE1A: u16 = 0x27 0x04);
     register!(DRX_TUNE1B: u16 = 0x27 0x06);
@@ -891,9 +1113,6 @@ pub mod dw1000 {
     register!(FS_PLLCFG: u32 = 0x2B 0x07);
     register!(FS_PLLTUNE: u8 = 0x2B 0x0B);
     register!(FS_XTALT: u8 = 0x2B 0x0E);
-    register!(AGC_TUNE1: u16 = 0x23 0x04);
-    register!(AGC_TUNE2: u32 = 0x23 0x0C);
-    register!(AGC_TUNE3: u16 = 0x23 0x12);
     register!(AON_CTRL: AonCtrl = 0x2C 0x02);
     register!(AON_CFG0: AonCfg0 = 0x2C 0x06);
     register!(OTP_CTRL: OtpCtrl = 0x2D 0x06);
