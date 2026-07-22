@@ -105,7 +105,7 @@ u64_number_impl!(u32);
 u64_number_impl!(u16);
 u64_number_impl!(u8);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, defmt::Format)]
 /// A pure numerical field with an outer container type (the smallest pure number type that can
 /// contain the register field, usually) and an actual length in bits. The field will be masked
 /// by the bit length so you can e.g. use NumberField<u64, 40> as a u64-backed storage for a
@@ -118,7 +118,7 @@ impl<Type: U64Number, const BIT_COUNT: usize> From<Type> for NumberField<Type, B
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, defmt::Format)]
 /// Just takes up bits, doesn't actually encode anything. There are many reserved
 /// bitfields in the dw1000 register file; this is used to pad those.
 pub struct ReservedField<const BIT_COUNT: usize>;
@@ -210,7 +210,7 @@ macro_rules! register {
 macro_rules! reg_type {
      (struct $name:ident($reg_size:literal) { $($bitfield_name:ident : $bitfield_type:ty = $bitfield_default:tt),* }) => {
          #[allow(dead_code)]
-         #[derive(Debug, Copy, Clone)]
+         #[derive(Debug, Copy, Clone, defmt::Format)]
          pub struct $name {
              $(
                  pub $bitfield_name: $bitfield_type,
@@ -258,7 +258,7 @@ macro_rules! reg_type {
 macro_rules! reg_enum {
      (enum $name:ident($base_type:ty, $field_len:literal) { $($field_name:ident => $field_value:literal ),* }) => {
          #[allow(dead_code)]
-         #[derive(Debug, Copy, Clone)]
+         #[derive(Debug, Copy, Clone,  defmt::Format)]
          pub enum $name {
              $(
                  $field_name,
@@ -790,6 +790,71 @@ pub mod dw1000 {
         ldeload: bool = false
     });
 
+    reg_enum!(enum TxState(u8, 4) {
+        Idle => 0x0,
+        Preamble => 0x1,
+        Sfd => 0x2,
+        Phr => 0x3,
+        Sde => 0x4,
+        Data => 0x5,
+        RspData => 0x6
+    });
+
+    reg_enum!(enum RxState(u8, 8) {
+        Idle => 0x00,
+        StartAnalog => 0x01,
+        RxReady => 0x04,
+        PreambleFind => 0x05,
+        PreambleTimeout => 0x06,
+        SfdFound => 0x07,
+        ConfigurePhrRx => 0x08,
+        PhrRxStart => 0x09,
+        DataRateReady => 0x0A,
+        DataRxSeq => 0x0C,
+        ConfigData => 0x0D,
+        PhrNotOk => 0x0E,
+        LastSymbol => 0x0F,
+        WaitRsdDone => 0x10,
+        RsdNotOk => 0x12,
+        Reconfig110 => 0x13,
+        Wait110Phr => 0x14
+    });
+
+    reg_enum!(enum PmscState(u8, 8) {
+        Init => 0x00,
+        Idle => 0x01,
+        TxWait => 0x02,
+        RxWait => 0x03,
+        Tx => 0x4,
+        Rx => 0x5
+    });
+
+    reg_type!(struct SysState(3) {
+        tx_state: TxState = (TxState::Idle),
+        _res1: ReservedField<4> = ReservedField,
+        rx_state: RxState = (RxState::Idle),
+        pmsc_state: PmscState = (PmscState::Idle)
+    });
+
+    reg_type!(struct AonCtrl(1) {
+        restore: bool = false,
+        save: bool = false,
+        upl_cfg: bool = false,
+        dca_read: bool = false,
+        _res1: ReservedField<3> = ReservedField,
+        dca_enab: bool = false
+    });
+
+    reg_type!(struct AonCfg0(4) {
+        sleep_en: bool = false,
+        wake_pin: bool = false,
+        wake_spi: bool = false,
+        wake_cnt: bool = false,
+        lpdiv_en: bool = false,
+        lpclkdiva: NumberField<u16, 11> = (0.into()),
+        sleep_tim: NumberField<u16, 16> = (0.into())
+    });
+
     register!(DEV_ID: u32 = 0x00 0x00);
     register!(EUI: u64 = 0x01 0x00);
     register!(PANADR: PanAdr = 0x03 0x00);
@@ -804,6 +869,7 @@ pub mod dw1000 {
     register!(RX_FINFO: RxFinfo = 0x10 0x00);
     register!(RX_TIME: Timestamp = 0x15 0x00);
     register!(TX_TIME: Timestamp = 0x17 0x00);
+    register!(SYS_STATE: SysState = 0x19 0x00);
     register!(TX_POWER: u32 = 0x1E 0x00);
     register!(CHAN_CTRL: ChanCtrl = 0x1F 0x00);
     register!(DRX_TUNE0B: u16 = 0x27 0x02);
@@ -828,6 +894,8 @@ pub mod dw1000 {
     register!(AGC_TUNE1: u16 = 0x23 0x04);
     register!(AGC_TUNE2: u32 = 0x23 0x0C);
     register!(AGC_TUNE3: u16 = 0x23 0x12);
+    register!(AON_CTRL: AonCtrl = 0x2C 0x02);
+    register!(AON_CFG0: AonCfg0 = 0x2C 0x06);
     register!(OTP_CTRL: OtpCtrl = 0x2D 0x06);
     register!(LDE_CFG1: u16 = 0x2E 0x0806);
     register!(LDE_CFG2: u16 = 0x2E 0x1806);

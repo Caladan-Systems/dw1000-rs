@@ -72,12 +72,11 @@ impl SysStatus {
     pub fn rx_mask() -> Self {
         Self {
             rxdfr: true,
-            ldedone: true,
             ldeerr: true,
             rxphe: true,
             rxfce: true,
-            rxfcg: true,
             rxrfsl: true,
+            rxpto: true,
             ..Default::default()
         }
     }
@@ -202,6 +201,92 @@ pub enum Error<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digi
     #[error("error with gpio subsystem")]
     /// The GPIO subsystem did something weird.
     GpioError(GpioError),
+    #[error("An unknown error occurred")]
+    /// The DW1000 did something weird we can't identify
+    Unknown,
+}
+
+impl<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digital::Error>
+    Error<SpiError, GpioError>
+{
+    fn check_rx_sysstatus(stat: SysStatus) -> Result<(), Self> {
+        if stat.rxphe {
+            return Err(Error::PhyHeaderError);
+        }
+        if stat.rxfce {
+            return Err(Error::FcsError);
+        }
+        if stat.rxrfsl {
+            return Err(Error::ReedSolomonSyncLoss);
+        }
+        if stat.rxrfto {
+            return Err(Error::Timeout);
+        }
+        if stat.ldeerr {
+            return Err(Error::LdeErr);
+        }
+        if stat.rxpto {
+            return Err(Error::PreambleTimeout);
+        }
+        if stat.rxsfd_to {
+            return Err(Error::SfdTimeout);
+        }
+        if stat.affrej {
+            return Err(Error::FrameFilterReject);
+        }
+        Ok(())
+    }
+}
+
+/// A receive stream in RXAUTR=1 mode (e.g. receiver automatically re-enables itself)
+/// it is not possible to transmit while in receive streaming mode.
+pub struct RxStream<
+    'a,
+    Device: SpiDevice,
+    NrstPin: OutputPin,
+    IrqPin: Wait + InputPin,
+    Delays: DelayNs,
+> {
+    chip: &'a mut Dw1000<Device, NrstPin, IrqPin, Delays>,
+}
+
+impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs> Drop
+    for RxStream<'a, Device, NrstPin, IrqPin, Delays>
+{
+    fn drop(&mut self) {
+        self.chip.reset_syscfg().unwrap();
+        self.chip.idle().unwrap();
+    }
+}
+
+impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
+    RxStream<'a, Device, NrstPin, IrqPin, Delays>
+{
+    /// The error type.
+    pub type Error = Error<Device::Error, NrstPin::Error>;
+
+    /// Grab the next frame from the double-buffer, waiting if the double-buffer is empty.
+    /// This does not support breaking up the access into two parts (status and data) -
+    /// they must be done in quick succession or the buffer will overrun and cause data corruption.
+    pub async fn next(&mut self, buf: &mut [u8]) -> Result<(usize, u64), Self::Error> {
+        self.chip.interrupt_wait(|_| true).await?;
+        let stat = self.chip.read_reg(SYS_STATUS)?;
+        Error::check_rx_sysstatus(stat)?;
+        if stat.rxdfr {
+            self.chip.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
+            let finfo = self.chip.read_reg(RX_FINFO)?;
+            if finfo.rxflen.0 < 2 {
+                return Err(Error::RxLenTooSmall(finfo.rxflen.0 as usize));
+            }
+            let len = (finfo.rxflen.0 as usize - 2).min(buf.len());
+            self.chip.read_rx_buffer(&mut buf[0..len])?;
+            let time = self.chip.get_rx_time()?;
+            self.chip.hrbpt()?;
+            Ok((len, time))
+        } else {
+            Err(Error::Unknown)
+        }
+    }
 }
 
 /// A DecaWave DW1000 generic over the spi, gpio, and timing interfaces.
@@ -216,7 +301,7 @@ pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: D
     delays: Delays,
 }
 
-impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
+impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
     Dw1000<Device, NrstPin, IrqPin, Delays>
 {
     /// The error type returned by most of the functions of the driver.
@@ -265,19 +350,15 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
         &mut self,
         mut f: impl FnMut(SysStatus) -> bool,
     ) -> Result<(), Self::Error> {
-        if self.irq.is_some() {
-            loop {
-                self.irq.as_mut().unwrap().wait_for_high().await.unwrap();
-                if f(self.get_status()?) {
-                    break;
-                }
-            }
-        } else {
-            loop {
+        loop {
+            if let Some(irq) = self.irq.as_mut() {
+                irq.wait_for_high().await.unwrap();
+                //defmt::info!("irq line status: {}", irq.is_high().unwrap());
+            } else {
                 self.delays.delay_us(10).await;
-                if f(self.get_status()?) {
-                    break;
-                }
+            }
+            if f(self.get_status()?) {
+                break;
             }
         }
         Ok(())
@@ -291,6 +372,17 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
         self.nrst.set_high().map_err(Error::GpioError)?;
         self.delays.delay_ms(100).await;
         Ok(())
+    }
+
+    /// Issue HRBPT to switch to the other buffer in the RX double-buffered set.
+    pub fn hrbpt(&mut self) -> Result<(), Self::Error> {
+        self.write_reg(
+            SYS_CTRL,
+            SysCtrl {
+                hrbpt: true,
+                ..Default::default()
+            },
+        )
     }
 
     fn make_header<'a>(write: bool, file: u8, addr: u16, buffer: &'a mut [u8; 3]) -> &'a [u8] {
@@ -366,6 +458,21 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
         Ok(())
     }
 
+    fn generate_syscfg(&self) -> SysCfg {
+        SysCfg {
+            dis_drxb: true,
+            dis_stxp: true,
+            hirq_pol: true,
+            rxautr: false,
+            rxm110k: matches!(self.profile.drate, Bitrate::Kbps110),
+            ..Default::default()
+        }
+    }
+
+    fn reset_syscfg(&mut self) -> Result<(), Self::Error> {
+        self.write_reg(SYS_CFG, self.generate_syscfg())
+    }
+
     /// Initialize the DW1000. This writes all system configuration and
     /// "magic" tuning parameters. After this returns Ok(()), the DW1000
     /// is able to transmit, receive, and range - e.g., no more setup work is
@@ -378,16 +485,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
     /// For implementers: the magic values here are mostly undocumented; we've taken
     /// a "just trust it" approach, which has worked well enough so far.
     pub async fn init(&mut self) -> Result<(), Self::Error> {
-        self.write_reg(
-            SYS_CFG,
-            SysCfg {
-                dis_drxb: true,
-                dis_stxp: true,
-                hirq_pol: true,
-                rxm110k: matches!(self.profile.drate, Bitrate::Kbps110),
-                ..Default::default()
-            },
-        )?;
+        self.write_reg(SYS_CFG, self.generate_syscfg())?;
         if self.irq.is_some() {
             self.write_reg(SYS_MASK, SysStatus::rx_mask() | SysStatus::tx_mask())?;
         }
@@ -644,36 +742,11 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
             },
         )?;
         let ret = loop {
+            //defmt::info!("state is {}", self.read_reg(SYS_STATE)?);
+            //defmt::info!("status is {}", self.read_reg(SYS_STATUS)?);
             self.interrupt_wait(|_| true).await?;
-            //defmt::info!("isr");
-            let stat = self.read_reg(SYS_STATUS);
-            //defmt::info!("stat: {}", defmt::Debug2Format(&stat));
-            let stat = stat?;
-            self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
-            if stat.rxphe {
-                break Err(Error::PhyHeaderError);
-            }
-            if stat.rxfce {
-                break Err(Error::FcsError);
-            }
-            if stat.rxrfsl {
-                break Err(Error::ReedSolomonSyncLoss);
-            }
-            if stat.rxrfto {
-                break Err(Error::Timeout);
-            }
-            if stat.ldeerr {
-                break Err(Error::LdeErr);
-            }
-            if stat.rxpto {
-                break Err(Error::PreambleTimeout);
-            }
-            if stat.rxsfd_to {
-                break Err(Error::SfdTimeout);
-            }
-            if stat.affrej {
-                break Err(Error::FrameFilterReject);
-            }
+            let stat = self.read_reg(SYS_STATUS)?;
+            Error::check_rx_sysstatus(stat)?;
             if stat.rxdfr {
                 let finfo = self.read_reg(RX_FINFO)?;
                 if finfo.rxflen.0 < 2 {
@@ -684,12 +757,82 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs>
                 self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
                 break Ok(len);
             }
+            if matches!(self.read_reg(SYS_STATE)?.rx_state, RxState::Idle) {
+                defmt::info!("rx idled, restarting");
+                self.write_reg(
+                    SYS_CTRL,
+                    SysCtrl {
+                        rxenab: true,
+                        ..Default::default()
+                    },
+                )?;
+            }
         };
         // go to idle
         //self.idle().await;
         // clear rx status
         self.write_reg(SYS_STATUS, SysStatus::rx_mask())?;
         ret
+    }
+
+    /// Get an RXAUTR stream - the receiver automatically turns itself
+    /// back on after every reception (this is a DW1000 feature),
+    /// avoiding dropped frames. This is much more efficient and reliable
+    /// than manually polling the receiver.
+    pub async fn rx_stream<'a>(
+        &'a mut self,
+    ) -> Result<RxStream<'a, Device, NrstPin, IrqPin, Delays>, Self::Error> {
+        let mut cfg = self.generate_syscfg();
+        cfg.rxautr = true;
+        cfg.dis_drxb = false;
+        self.write_reg(SYS_CFG, cfg)?;
+        self.write_reg(
+            SYS_CTRL,
+            SysCtrl {
+                rxenab: true,
+                ..Default::default()
+            },
+        )?;
+        Ok(RxStream { chip: self })
+    }
+
+    /// Enter the standard sleep mode.
+    pub fn sleep_wakeup(
+        &mut self,
+        pin: bool,
+        spi: bool,
+        timer: Option<u16>,
+    ) -> Result<(), Self::Error> {
+        self.write_reg(
+            AON_CFG0,
+            AonCfg0 {
+                sleep_en: true,
+                wake_cnt: timer.is_some(),
+                wake_pin: pin,
+                wake_spi: spi,
+                sleep_tim: timer.unwrap_or(0).into(),
+                ..Default::default()
+            },
+        )?;
+        self.write_reg(
+            AON_CTRL,
+            AonCtrl {
+                upl_cfg: true,
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Sleep with SPI wakeup enabled.
+    pub fn sleep(&mut self) -> Result<(), Self::Error> {
+        self.sleep_wakeup(false, true, None)
+    }
+
+    /// Wake up a sleeping DW1000 by asserting the SPI CS line for 500µs.
+    pub fn wakeup(&mut self) -> Result<(), Self::Error> {
+        self.spi.transaction(&mut [Operation::DelayNs(500000)])?;
+        Ok(())
     }
 }
 
