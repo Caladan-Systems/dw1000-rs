@@ -296,7 +296,7 @@ impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays:
 pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs> {
     spi: Device,
     nrst: NrstPin,
-    irq: Option<IrqPin>,
+    irq: IrqPin,
     profile: Profile,
     delays: Delays,
 }
@@ -317,7 +317,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     pub fn new(
         spi: Device,
         mut nrst: NrstPin,
-        irq: Option<IrqPin>,
+        irq: IrqPin,
         profile: Profile,
         delays: Delays,
     ) -> Result<Self, Self::Error> {
@@ -351,12 +351,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         mut f: impl FnMut(SysStatus) -> bool,
     ) -> Result<(), Self::Error> {
         loop {
-            if let Some(irq) = self.irq.as_mut() {
-                irq.wait_for_high().await.unwrap();
-                //defmt::info!("irq line status: {}", irq.is_high().unwrap());
-            } else {
-                self.delays.delay_us(10).await;
-            }
+            self.irq.wait_for_high().await.unwrap();
             if f(self.get_status()?) {
                 break;
             }
@@ -486,9 +481,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// a "just trust it" approach, which has worked well enough so far.
     pub async fn init(&mut self) -> Result<(), Self::Error> {
         self.write_reg(SYS_CFG, self.generate_syscfg())?;
-        if self.irq.is_some() {
-            self.write_reg(SYS_MASK, SysStatus::rx_mask() | SysStatus::tx_mask())?;
-        }
+        self.write_reg(SYS_MASK, SysStatus::rx_mask() | SysStatus::tx_mask())?;
         self.write_reg(
             CHAN_CTRL,
             ChanCtrl {
