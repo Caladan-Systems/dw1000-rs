@@ -314,7 +314,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Note that dw1000.init() performs slow-clock calls and cannot function above 2mhz spi - make sure
     /// the spi driver is set to 1-2mhz before calling the reset()/init() sequence, and increase as high as 20mhz
     /// for actual operation.
-    pub async fn new(
+    pub fn new(
         spi: Device,
         mut nrst: NrstPin,
         irq: Option<IrqPin>,
