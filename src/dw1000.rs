@@ -159,13 +159,13 @@ impl core::ops::BitOr for SysStatus {
 
 #[derive(Debug, Error)]
 /// DW1000 errors.
-pub enum Error<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digital::Error> {
+pub enum Error {
     #[error("invalid device id 0x{0:08X}, expected 0xDECA0130")]
     /// The DEV_ID register contained an invalid value.
     BadDeviceId(u32),
     #[error("spi driver error")]
     /// The SPI driver reported an error.
-    SpiError(#[from] SpiError),
+    SpiError(embedded_hal::spi::ErrorKind),
     #[error("operation timed out")]
     /// Something timed out (generic)
     Timeout,
@@ -198,17 +198,18 @@ pub enum Error<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digi
     /// as the received length contains the 2 byte CRC - either the transmitter
     /// didn't generate a CRC, or the frame was garbled.
     RxLenTooSmall(usize),
-    #[error("error with gpio subsystem")]
-    /// The GPIO subsystem did something weird.
-    GpioError(GpioError),
     #[error("An unknown error occurred")]
     /// The DW1000 did something weird we can't identify
     Unknown,
 }
 
-impl<SpiError: embedded_hal::spi::Error, GpioError: embedded_hal::digital::Error>
-    Error<SpiError, GpioError>
-{
+impl<SpiError: embedded_hal::spi::Error> From<SpiError> for Error {
+    fn from(value: SpiError) -> Self {
+        Self::SpiError(value.kind())
+    }
+}
+
+impl Error {
     fn check_rx_sysstatus(stat: SysStatus) -> Result<(), Self> {
         if stat.rxphe {
             return Err(Error::PhyHeaderError);
@@ -262,13 +263,10 @@ impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays:
 impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
     RxStream<'a, Device, NrstPin, IrqPin, Delays>
 {
-    /// The error type.
-    pub type Error = Error<Device::Error, NrstPin::Error>;
-
     /// Grab the next frame from the double-buffer, waiting if the double-buffer is empty.
     /// This does not support breaking up the access into two parts (status and data) -
     /// they must be done in quick succession or the buffer will overrun and cause data corruption.
-    pub async fn next(&mut self, buf: &mut [u8]) -> Result<(usize, u64), Self::Error> {
+    pub async fn next(&mut self, buf: &mut [u8]) -> Result<(usize, u64), Error> {
         self.chip.interrupt_wait(|_| true).await?;
         let stat = self.chip.read_reg(SYS_STATUS)?;
         Error::check_rx_sysstatus(stat)?;
@@ -304,10 +302,6 @@ pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: D
 impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
     Dw1000<Device, NrstPin, IrqPin, Delays>
 {
-    /// The error type returned by most of the functions of the driver.
-    /// It's fairly complicated because it's generic over the embedded_hal errors.
-    pub type Error = Error<Device::Error, NrstPin::Error>;
-
     /// Construct a new dw1000 given an SPI Device, an NRST pin, and a profile.
     /// This will NOT initialize the dw1000! Call dw1000.reset() and then dw1000.init() for that.
     ///
@@ -320,8 +314,8 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         irq: IrqPin,
         profile: Profile,
         delays: Delays,
-    ) -> Result<Self, Self::Error> {
-        nrst.set_high().map_err(Error::GpioError)?;
+    ) -> Result<Self, Error> {
+        let _ = nrst.set_high();
         Ok(Self {
             spi,
             irq,
@@ -337,7 +331,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     }
 
     /// Verify that the device id is correct (0xDECA0130)
-    pub fn check_dev_id(&mut self) -> Result<(), Self::Error> {
+    pub fn check_dev_id(&mut self) -> Result<(), Error> {
         let devid = self.read_reg(registers::DEV_ID)?;
         if devid != 0xDECA0130 {
             Err(Error::BadDeviceId(devid))
@@ -346,10 +340,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         }
     }
 
-    async fn interrupt_wait(
-        &mut self,
-        mut f: impl FnMut(SysStatus) -> bool,
-    ) -> Result<(), Self::Error> {
+    async fn interrupt_wait(&mut self, mut f: impl FnMut(SysStatus) -> bool) -> Result<(), Error> {
         loop {
             self.irq.wait_for_high().await.unwrap();
             if f(self.get_status()?) {
@@ -361,16 +352,16 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
 
     /// Reset the device. This pulls NRST low for 10ms and then waits
     /// 100ms for bring-up.
-    pub async fn reset(&mut self) -> Result<(), Self::Error> {
-        self.nrst.set_low().map_err(Error::GpioError)?;
+    pub async fn reset(&mut self) -> Result<(), Error> {
+        let _ = self.nrst.set_low();
         self.delays.delay_ms(10).await;
-        self.nrst.set_high().map_err(Error::GpioError)?;
+        let _ = self.nrst.set_high();
         self.delays.delay_ms(100).await;
         Ok(())
     }
 
     /// Issue HRBPT to switch to the other buffer in the RX double-buffered set.
-    pub fn hrbpt(&mut self) -> Result<(), Self::Error> {
+    pub fn hrbpt(&mut self) -> Result<(), Error> {
         self.write_reg(
             SYS_CTRL,
             SysCtrl {
@@ -406,7 +397,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     pub fn read_reg<const LEN: usize, Reg: Register<LEN, Dw1000RegSet>>(
         &mut self,
         _reg: Reg,
-    ) -> Result<Reg::Type, Self::Error> {
+    ) -> Result<Reg::Type, Error> {
         let mut buffer = [0; LEN];
         self.spi.transaction(&mut [
             Operation::Write(Self::make_header(false, Reg::FILE, Reg::REG, &mut [0; 3])),
@@ -422,7 +413,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         &mut self,
         _reg: Reg,
         data: Reg::Type,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Error> {
         let buffer = data.serialize();
         self.spi.transaction(&mut [
             Operation::Write(Self::make_header(true, Reg::FILE, Reg::REG, &mut [0; 3])),
@@ -434,7 +425,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Write the TX buffer register. This cannot be efficiently encoded in the current
     /// register model, and rather than making it much more complicated, we've opted
     /// to just add special exceptions for the buffers.
-    pub fn write_tx_buffer(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+    pub fn write_tx_buffer(&mut self, data: &[u8]) -> Result<(), Error> {
         self.spi.transaction(&mut [
             Operation::Write(Self::make_header(true, 0x09, 0x00, &mut [0; 3])),
             Operation::Write(data),
@@ -445,7 +436,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Read the RX buffer register. This cannot be encoded in the current
     /// register model, and rather than making it much more complicated, we've opted
     /// to just add special exceptions for the buffers.
-    pub fn read_rx_buffer(&mut self, data: &mut [u8]) -> Result<(), Self::Error> {
+    pub fn read_rx_buffer(&mut self, data: &mut [u8]) -> Result<(), Error> {
         self.spi.transaction(&mut [
             Operation::Write(Self::make_header(false, 0x11, 0x00, &mut [0; 3])),
             Operation::Read(data),
@@ -464,7 +455,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         }
     }
 
-    fn reset_syscfg(&mut self) -> Result<(), Self::Error> {
+    fn reset_syscfg(&mut self) -> Result<(), Error> {
         self.write_reg(SYS_CFG, self.generate_syscfg())
     }
 
@@ -479,7 +470,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     ///
     /// For implementers: the magic values here are mostly undocumented; we've taken
     /// a "just trust it" approach, which has worked well enough so far.
-    pub async fn init(&mut self) -> Result<(), Self::Error> {
+    pub async fn init(&mut self) -> Result<(), Error> {
         self.write_reg(SYS_CFG, self.generate_syscfg())?;
         self.write_reg(SYS_MASK, SysStatus::rx_mask() | SysStatus::tx_mask())?;
         self.write_reg(
@@ -611,7 +602,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// without a running LDE, regardless of whether you're doing ranging or not.
     ///
     /// This is called by init(), so you probably don't need to call it yourself.
-    pub async fn load_lde(&mut self) -> Result<(), Self::Error> {
+    pub async fn load_lde(&mut self) -> Result<(), Error> {
         self.write_reg(PMSC_CTRL0, 0x0301)?;
         self.write_reg(
             OTP_CTRL,
@@ -628,7 +619,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Set the TX function control register. This uses several
     /// parameters from the DW1000 profile; it's just a convenience function
     /// to simplify encoding those.
-    pub fn set_tx_fctrl(&mut self, dlen: usize) -> Result<(), Self::Error> {
+    pub fn set_tx_fctrl(&mut self, dlen: usize) -> Result<(), Error> {
         self.write_reg(
             TX_FCTRL,
             TxFctrl {
@@ -646,7 +637,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     }
 
     /// Force the DW1000 into idle mode.
-    pub fn idle(&mut self) -> Result<(), Self::Error> {
+    pub fn idle(&mut self) -> Result<(), Error> {
         self.write_reg(
             SYS_CTRL,
             SysCtrl {
@@ -659,7 +650,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
 
     /// Transmit a message. This waits until the transmission completes,
     /// so once this returns Ok(()), you can immediately transmit (or receive).
-    pub async fn transmit(&mut self, message: &[u8]) -> Result<(), Self::Error> {
+    pub async fn transmit(&mut self, message: &[u8]) -> Result<(), Error> {
         self.idle()?;
         self.set_tx_fctrl(message.len() + 2)?;
         self.write_tx_buffer(message)?;
@@ -678,11 +669,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Delayed transmission. This waits some dw1000 clock cycles (each of which is ~15.65ps) before transmitting.
     /// It uses the DW1000's internal delay support and so is extremely precise, suitable
     /// for ranging purposes.
-    pub async fn transmit_delayed(
-        &mut self,
-        message: &[u8],
-        dtime: u64,
-    ) -> Result<(), Self::Error> {
+    pub async fn transmit_delayed(&mut self, message: &[u8], dtime: u64) -> Result<(), Error> {
         self.idle()?;
         self.set_tx_fctrl(message.len() + 2)?;
         self.write_reg(DX_TIME, Timestamp { time: dtime.into() })?;
@@ -701,19 +688,19 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     }
 
     /// Read the status register.
-    pub fn get_status(&mut self) -> Result<SysStatus, Self::Error> {
+    pub fn get_status(&mut self) -> Result<SysStatus, Error> {
         self.read_reg(registers::SYS_STATUS)
     }
 
     /// Read the RX time register. This returns a value in dw1000 clock cycles,
     /// each of which is ~15.65ps
-    pub fn get_rx_time(&mut self) -> Result<u64, Self::Error> {
+    pub fn get_rx_time(&mut self) -> Result<u64, Error> {
         Ok(self.read_reg(registers::RX_TIME)?.time.0)
     }
 
     /// Read the TX time register. This returns a value in dw1000 clock cycles,
     /// each of which is ~15.65ps
-    pub fn get_tx_time(&mut self) -> Result<u64, Self::Error> {
+    pub fn get_tx_time(&mut self) -> Result<u64, Error> {
         Ok(self.read_reg(registers::TX_TIME)?.time.0)
     }
 
@@ -721,7 +708,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// to use an external timeout (e.g. embassy's `with_timeout` function) to ensure
     /// it doesn't spin forever. Returns the length of the received frame - you can
     /// get the actual data with the `read_rx_buffer` function.
-    pub async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+    pub async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
         // go to idle
         self.idle()?;
         // clear rx status
@@ -774,7 +761,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// than manually polling the receiver.
     pub async fn rx_stream<'a>(
         &'a mut self,
-    ) -> Result<RxStream<'a, Device, NrstPin, IrqPin, Delays>, Self::Error> {
+    ) -> Result<RxStream<'a, Device, NrstPin, IrqPin, Delays>, Error> {
         let mut cfg = self.generate_syscfg();
         cfg.rxautr = true;
         cfg.dis_drxb = false;
@@ -790,12 +777,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     }
 
     /// Enter the standard sleep mode.
-    pub fn sleep_wakeup(
-        &mut self,
-        pin: bool,
-        spi: bool,
-        timer: Option<u16>,
-    ) -> Result<(), Self::Error> {
+    pub fn sleep_wakeup(&mut self, pin: bool, spi: bool, timer: Option<u16>) -> Result<(), Error> {
         self.write_reg(
             AON_CFG0,
             AonCfg0 {
@@ -818,12 +800,12 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     }
 
     /// Sleep with SPI wakeup enabled.
-    pub fn sleep(&mut self) -> Result<(), Self::Error> {
+    pub fn sleep(&mut self) -> Result<(), Error> {
         self.sleep_wakeup(false, true, None)
     }
 
     /// Wake up a sleeping DW1000 by asserting the SPI CS line for 500µs.
-    pub fn wakeup(&mut self) -> Result<(), Self::Error> {
+    pub fn wakeup(&mut self) -> Result<(), Error> {
         self.spi.transaction(&mut [Operation::DelayNs(500000)])?;
         Ok(())
     }
