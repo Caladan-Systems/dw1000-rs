@@ -2,13 +2,22 @@
  * A Decawave DW1000 driver implementation.
  */
 use embedded_hal::{
-    digital::{InputPin, OutputPin},
+    digital::InputPin,
     spi::{Operation, SpiDevice},
 };
 use embedded_hal_async::{delay::DelayNs, digital::Wait};
 use thiserror::Error;
 
 use crate::registers::{Register, RegisterType, ReservedField, dw1000::*};
+
+/// A pin that can be either open (high-impedance) or drain (pulled low).
+pub trait OpenDrainPin {
+    /// Set the pin to high-impedance.
+    fn set_open(&mut self);
+
+    /// Pull the pin to ground.
+    fn set_drain(&mut self);
+}
 
 /// This is the size of the preamble detection sliding-window register.
 /// In general, the largest value will get the best results, but the preamble size
@@ -244,14 +253,14 @@ impl Error {
 pub struct RxStream<
     'a,
     Device: SpiDevice,
-    NrstPin: OutputPin,
+    NrstPin: OpenDrainPin,
     IrqPin: Wait + InputPin,
     Delays: DelayNs,
 > {
     chip: &'a mut Dw1000<Device, NrstPin, IrqPin, Delays>,
 }
 
-impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs> Drop
+impl<'a, Device: SpiDevice, NrstPin: OpenDrainPin, IrqPin: Wait + InputPin, Delays: DelayNs> Drop
     for RxStream<'a, Device, NrstPin, IrqPin, Delays>
 {
     fn drop(&mut self) {
@@ -260,7 +269,7 @@ impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays:
     }
 }
 
-impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
+impl<'a, Device: SpiDevice, NrstPin: OpenDrainPin, IrqPin: Wait + InputPin, Delays: DelayNs>
     RxStream<'a, Device, NrstPin, IrqPin, Delays>
 {
     /// Grab the next frame from the double-buffer, waiting if the double-buffer is empty.
@@ -291,7 +300,7 @@ impl<'a, Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays:
 ///
 /// Note that this does not use asynchronous spi: all spi operations are blocking.
 /// This is because DW1000 requires fairly fast spi turnarounds and async is slow.
-pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: DelayNs> {
+pub struct Dw1000<Device: SpiDevice, NrstPin: OpenDrainPin, IrqPin: Wait, Delays: DelayNs> {
     spi: Device,
     nrst: NrstPin,
     irq: IrqPin,
@@ -299,7 +308,7 @@ pub struct Dw1000<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait, Delays: D
     delays: Delays,
 }
 
-impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: DelayNs>
+impl<Device: SpiDevice, NrstPin: OpenDrainPin, IrqPin: Wait + InputPin, Delays: DelayNs>
     Dw1000<Device, NrstPin, IrqPin, Delays>
 {
     /// Construct a new dw1000 given an SPI Device, an NRST pin, and a profile.
@@ -315,7 +324,7 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
         profile: Profile,
         delays: Delays,
     ) -> Result<Self, Error> {
-        let _ = nrst.set_high();
+        let _ = nrst.set_open();
         Ok(Self {
             spi,
             irq,
@@ -353,9 +362,9 @@ impl<Device: SpiDevice, NrstPin: OutputPin, IrqPin: Wait + InputPin, Delays: Del
     /// Reset the device. This pulls NRST low for 10ms and then waits
     /// 100ms for bring-up.
     pub async fn reset(&mut self) -> Result<(), Error> {
-        let _ = self.nrst.set_low();
+        let _ = self.nrst.set_drain();
         self.delays.delay_ms(10).await;
-        let _ = self.nrst.set_high();
+        let _ = self.nrst.set_open();
         self.delays.delay_ms(100).await;
         Ok(())
     }
